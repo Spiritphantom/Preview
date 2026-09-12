@@ -20,6 +20,7 @@ type VNodeMap = {
   [T in keyof ValidTagNameMap]: {
     tag: T;
     children?: VNode[] | string;
+    key?: string | number;
     ref?: string;
     actions?: Record<string, (el: ValidTagNameMap[T]) => void>;
     onMount?: (el: ValidTagNameMap[T]) => void | Promise<void>;

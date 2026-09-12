@@ -47,6 +47,7 @@ function patch(oldVNode: VNode, newVNode: VNode, dom: BuiltEl, registry: Registr
   if (oldVNode.tag !== newVNode.tag) {
     const parentContainer = dom.parentNode;
     if (parentContainer) {
+      unregisterRefs(oldVNode, registry);
       parentContainer.replaceChild(buildDOM(newVNode, registry), dom);
     }
     return;
@@ -85,6 +86,7 @@ function patch(oldVNode: VNode, newVNode: VNode, dom: BuiltEl, registry: Registr
 
   // Case C: Absolute breakdown removal (Wipe completely)
   if (oldChild !== undefined && newChild === undefined) {
+    if (Array.isArray(oldChild)) oldChild.forEach((child) => unregisterRefs(child, registry));
     if (isProperNode(dom)) {
       dom.replaceChildren();
     } else {
@@ -111,6 +113,7 @@ function patch(oldVNode: VNode, newVNode: VNode, dom: BuiltEl, registry: Registr
 
   // Case F: Deep Node Lists normalizing back down to String primitives
   if (Array.isArray(oldChild) && typeof newChild === "string") {
+    oldChild.forEach((child) => unregisterRefs(child, registry));
     if (isProperNode(dom) && "replaceChildren" in dom) {
       dom.replaceChildren(document.createTextNode(newChild));
     } else {
@@ -121,12 +124,94 @@ function patch(oldVNode: VNode, newVNode: VNode, dom: BuiltEl, registry: Registr
 
   // Case G: Structural Matrix Loop (Deep Subtree Array Diffing)
   if (Array.isArray(oldChild) && Array.isArray(newChild)) {
-    oldChild.forEach((_value, index) => {
-      if (index < dom.childNodes.length) {
-        patch(oldChild[index]!, newChild[index]!, dom.childNodes[index] as BuiltEl, registry);
-      }
-    });
+    const isKeyed =
+      oldChild.some((child) => child.key !== undefined) ||
+      newChild.some((child) => child.key !== undefined);
+
+    if (isKeyed) {
+      patchKeyedChildren(oldChild, newChild, dom, registry);
+    } else {
+      patchUnkeyedChildren(oldChild, newChild, dom, registry);
+    }
     return;
+  }
+}
+
+// Case G, unkeyed: positional patch, safe when the two arrays differ in length
+function patchUnkeyedChildren(
+  oldChild: VNode[],
+  newChild: VNode[],
+  dom: BuiltEl,
+  registry: Registry,
+) {
+  const sharedLength = Math.min(oldChild.length, newChild.length);
+
+  for (let index = 0; index < sharedLength; index++) {
+    patch(oldChild[index]!, newChild[index]!, dom.childNodes[index] as BuiltEl, registry);
+  }
+
+  if (newChild.length > oldChild.length) {
+    const fragment = document.createDocumentFragment();
+    for (let index = sharedLength; index < newChild.length; index++) {
+      fragment.appendChild(buildDOM(newChild[index]!, registry));
+    }
+    dom.appendChild(fragment);
+  } else if (oldChild.length > newChild.length) {
+    for (let index = oldChild.length - 1; index >= sharedLength; index--) {
+      unregisterRefs(oldChild[index]!, registry);
+      dom.childNodes[index]?.remove();
+    }
+  }
+}
+
+// Case G, keyed: reconciles by key so an existing DOM node (and its live input
+// state, focus, refs) follows its VNode across reorders instead of being
+// rebuilt in place at its new index
+function patchKeyedChildren(
+  oldChild: VNode[],
+  newChild: VNode[],
+  dom: BuiltEl,
+  registry: Registry,
+) {
+  const oldByKey = new Map<string | number, { vnode: VNode; node: ChildNode }>();
+  oldChild.forEach((vnode, index) => {
+    const node = dom.childNodes[index];
+    if (node) oldByKey.set(vnode.key ?? index, { vnode, node });
+  });
+
+  const usedKeys = new Set<string | number>();
+  let cursor: ChildNode | null = dom.firstChild;
+
+  newChild.forEach((vnode, index) => {
+    const key = vnode.key ?? index;
+    const existing = oldByKey.get(key);
+    usedKeys.add(key);
+
+    if (existing) {
+      patch(existing.vnode, vnode, existing.node as BuiltEl, registry);
+      if (existing.node !== cursor) dom.insertBefore(existing.node, cursor);
+      cursor = existing.node.nextSibling;
+    } else {
+      const built = buildDOM(vnode, registry);
+      dom.insertBefore(built, cursor);
+      cursor = built.nextSibling;
+    }
+  });
+
+  oldByKey.forEach(({ vnode, node }, key) => {
+    if (!usedKeys.has(key)) {
+      unregisterRefs(vnode, registry);
+      node.remove();
+    }
+  });
+}
+
+// Recursively removes refs belonging to a subtree that is being discarded, so
+// the registry does not grow unbounded as nodes are added and removed
+function unregisterRefs(vnode: VNode, registry: Registry) {
+  if (vnode.ref !== undefined) registry.delete(vnode.ref);
+  if (Array.isArray(vnode.children)) {
+    vnode.children.forEach((child) => unregisterRefs(child, registry));
   }
 }
 

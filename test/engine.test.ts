@@ -195,3 +195,134 @@ describe("Engine — patch: children (cases A\u{2013}F)", () => {
     expect(el?.querySelector("p")).toBeNull();
   });
 });
+
+describe("Engine — patch: case G, unkeyed children (length mismatch)", () => {
+  it("appends extra nodes when the new array is longer than the old one", () => {
+    let items = ["a", "b"];
+    const { container, engine } = setup(() => ({
+      tag: "ul",
+      children: items.map((item) => ({ tag: "li", children: item })),
+    }));
+    items = ["a", "b", "c", "d"];
+    engine.render();
+    expect(container.querySelectorAll("li").length).toBe(4);
+    expect(container.querySelectorAll("li")[3]?.textContent).toBe("d");
+  });
+
+  it("removes extra nodes when the new array is shorter than the old one", () => {
+    let items = ["a", "b", "c", "d"];
+    const { container, engine } = setup(() => ({
+      tag: "ul",
+      children: items.map((item) => ({ tag: "li", children: item })),
+    }));
+    items = ["a"];
+    engine.render();
+    expect(container.querySelectorAll("li").length).toBe(1);
+    expect(container.querySelector("li")?.textContent).toBe("a");
+  });
+
+  it("unregisters refs for nodes removed by a shrinking array", () => {
+    let items = ["a", "b"];
+    const { engine } = setup(() => ({
+      tag: "ul",
+      children: items.map((item) => ({
+        tag: "li",
+        ref: `item-${item}`,
+        actions: { noop: () => {} },
+        children: item,
+      })),
+    }));
+    items = ["a"];
+    engine.render();
+    expect(() => engine.dispatch("item-b", "noop")).toThrow('Ref "item-b" not found');
+  });
+});
+
+describe("Engine — patch: case G, keyed children", () => {
+  it("reorders existing DOM nodes instead of rebuilding them", () => {
+    let items = [
+      { id: "a", label: "Alpha" },
+      { id: "b", label: "Beta" },
+      { id: "c", label: "Gamma" },
+    ];
+    const { container, engine } = setup(() => ({
+      tag: "ul",
+      children: items.map((item) => ({ tag: "li", key: item.id, children: item.label })),
+    }));
+    const beforeNode = container.querySelectorAll("li")[0];
+
+    items = [items[1]!, items[2]!, items[0]!];
+    engine.render();
+
+    const afterNodes = container.querySelectorAll("li");
+    expect(afterNodes[2]).toBe(beforeNode);
+    expect([...afterNodes].map((node) => node.textContent)).toEqual(["Beta", "Gamma", "Alpha"]);
+  });
+
+  it("preserves live input state across a reorder", () => {
+    let items = ["a", "b"];
+    const { container, engine } = setup(() => ({
+      tag: "ul",
+      children: items.map((item) => ({
+        tag: "li",
+        key: item,
+        children: [{ tag: "input", key: `${item}-input` }],
+      })),
+    }));
+    const inputA = container.querySelectorAll("input")[0]!;
+    inputA.value = "typed by user a";
+
+    items = ["b", "a"];
+    engine.render();
+
+    expect(container.querySelectorAll("input")[1]?.value).toBe("typed by user a");
+  });
+
+  it("removes a keyed node absent from the new array and unregisters its ref", () => {
+    let items = ["a", "b", "c"];
+    const { container, engine } = setup(() => ({
+      tag: "ul",
+      children: items.map((item) => ({
+        tag: "li",
+        key: item,
+        ref: `item-${item}`,
+        actions: { noop: () => {} },
+        children: item,
+      })),
+    }));
+    items = ["a", "c"];
+    engine.render();
+    expect([...container.querySelectorAll("li")].map((node) => node.textContent)).toEqual([
+      "a",
+      "c",
+    ]);
+    expect(() => engine.dispatch("item-b", "noop")).toThrow('Ref "item-b" not found');
+  });
+
+  it("inserts a new keyed node in the correct position", () => {
+    let items = ["a", "c"];
+    const { container, engine } = setup(() => ({
+      tag: "ul",
+      children: items.map((item) => ({ tag: "li", key: item, children: item })),
+    }));
+    items = ["a", "b", "c"];
+    engine.render();
+    expect([...container.querySelectorAll("li")].map((node) => node.textContent)).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
+  });
+});
+
+describe("Engine — patch: registry cleanup", () => {
+  it("unregisters the old subtree's refs when a tag mismatch replaces it", () => {
+    let bool = false;
+    const { engine } = setup(() =>
+      bool ? { tag: "section" } : { tag: "div", ref: "box", actions: { noop: () => {} } },
+    );
+    bool = true;
+    engine.render();
+    expect(() => engine.dispatch("box", "noop")).toThrow('Ref "box" not found');
+  });
+});
